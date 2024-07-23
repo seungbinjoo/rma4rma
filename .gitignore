@@ -1,0 +1,8 @@
+data/*
+!data/xarm7
+logs/
+output/
+plot/
+.ipynb_checkpoints/
+.vscode/
+__pycache__/

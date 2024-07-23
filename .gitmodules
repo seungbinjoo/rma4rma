@@ -1,0 +1,8 @@
+[submodule "ManiSkill2"]
+	path = ManiSkill2
+	url = https://github.com/yichao-liang/ManiSkill2
+	branch = rma2
+[submodule "stable-baselines3"]
+	path = stable-baselines3
+	url = https://github.com/yichao-liang/stable-baselines3
+	branch = rma2
