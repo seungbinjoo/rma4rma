@@ -1,4 +1,4 @@
-Repo for Rapid Motor Adaptation for Robotic Manipulator Arms ([link]([www.google.com](https://arxiv.org/abs/2312.04670))). It's still under construction.
+Repo for Rapid Motor Adaptation for Robotic Manipulator Arms ([link](https://arxiv.org/abs/2312.04670)). It's still under construction.
 
 # Installation
 1. Clone the repo:
