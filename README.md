@@ -3,7 +3,7 @@ Repo for Rapid Motor Adaptation for Robotic Manipulator Arms ([link](https://arx
 # Installation
 1. Clone the repo:
 ```
-git clone --recurse-submodules https://github.com/yichao-liang/rma2
+git clone --recurse-submodules https://github.com/yichao-liang/rma4rma
 ```
 
 2. Create a conda environment:
