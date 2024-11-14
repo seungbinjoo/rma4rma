@@ -37,6 +37,7 @@ def parse_args():
         "Simple script demonstrating how to use Stable Baselines 3 with ManiSkill2 and RGBD Observations"
     )
     parser.add_argument("-e", "--env-id", type=str, default="PickCube-v1") # -e or --env-id specifies the environment ID, defaulting to "PickCube-v1"
+    # CHANGE TO BIMANUAL ROBOT
     parser.add_argument("--robot",
                         type=str,
                         default="panda",
