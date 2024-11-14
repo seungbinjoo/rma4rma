@@ -5,12 +5,16 @@ import torch.nn.functional as F
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
+# A helper class that reshapes input tensors into a 2D format (batch size, flattened features),
+# useful for passing data through linear layers
 class Flatten(nn.Module):
 
     def forward(self, input):
         return input.view(input.size(0), -1)
 
-
+# Inherits from BaseFeaturesExtractor from Stable-Baselines3
+# Custom feature extractor designed to process different types of observations,
+# with various configurations based on environment specifics (env_name) and input types (e.g., depth images, proprioceptive data).
 class FeaturesExtractorRMA(BaseFeaturesExtractor):
 
     def __init__(self,
@@ -29,6 +33,8 @@ class FeaturesExtractorRMA(BaseFeaturesExtractor):
                         and (not use_depth_base) and (not use_prop_history_base)
         self.sys_iden = sys_iden
 
+        # If use_priv_info is True, the class includes logic for encoding privileged information about the environment to
+        # help the model adapt to different contexts
         if self.use_priv_info:
             if env_name in ['PickCube', 'PickSingleYCB', 'PickSingleEGAD']:
                 priv_enc_in_dim = 4 + 3 + 4
@@ -92,10 +98,17 @@ class FeaturesExtractorRMA(BaseFeaturesExtractor):
 
         priv_enc_in = []
 
+        # If self.use_priv_info is True, the method:
+        # Extracts and embeds object1_type_id and object1_id using the nn.Embedding layers (obj_type_emb, obj_emb)
+
         if self.use_priv_info:
             obj_type_emb = self.obj_type_emb(
                 obs_dict['object1_type_id'].int()).squeeze(1)
+            
+            # Embedding Layers: obj_type_emb and obj_emb transform categorical data (object type ID and object ID) into dense vectors.
             obj_emb = self.obj_id_emb(obs_dict['object1_id'].int()).squeeze(1)
+
+            # Privileged Encoding (priv_enc_in): Provides additional context that can help the model adapt to different environments or situations
             priv_enc_in.extend([obj_type_emb, obj_emb])
             priv_enc_in.append(obs_dict['obj1_priv_info'])
             priv_enc_in = th.cat(priv_enc_in, dim=1)
@@ -112,8 +125,11 @@ class FeaturesExtractorRMA(BaseFeaturesExtractor):
                 obs_dict['agent_state'], obs_dict['object1_state'], env_vec,
                 obs_dict['goal_info']
             ]
+        # If self.use_priv_info is False, sets e_gt to None
         else:
             e_gt = None
+
+            # Modular Processing: The method conditionally includes depth-based or proprioceptive-based features based on the configuration
             if self.use_depth_base:
                 obs_list = [obs_dict['agent_state'], obs_dict['goal_info']]
                 img_emb = self.img_cnn(obs_dict['image'])
@@ -126,7 +142,8 @@ class FeaturesExtractorRMA(BaseFeaturesExtractor):
             if self.use_prop_history_base:
                 prop = self.prop_cnn(obs_dict['prop_act_history'])
                 obs_list.append(prop)
-
+        
+        # Tries to concatenate obs_list along the last dimension to form a complete observation vector obs
         try:
             obs = th.cat(obs_list, dim=-1)
         except:
@@ -138,7 +155,7 @@ class FeaturesExtractorRMA(BaseFeaturesExtractor):
         else:
             return obs
 
-
+# A simple multi-layer perceptron (MLP) network that can be configured with a list of layer sizes
 class MLP(nn.Module):
 
     def __init__(self, units, input_size):
@@ -154,7 +171,8 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.mlp(x)
 
-
+# A network designed for adaptation purposes, which can optionally include depth perception (use_depth)
+# Uses convolutional networks (DepthCNN and ProprioCNN) to process depth and proprioceptive data
 class AdaptationNet(nn.Module):
 
     def __init__(self,
@@ -182,6 +200,8 @@ class AdaptationNet(nn.Module):
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(out_dim, out_dim)
 
+    # The forward() method extracts features from various components
+    # (e.g., proprioceptive data, perception data) and concatenates them for further processing
     def forward(self, x):
         # print x
         prop, perc, cparam = x['prop'], x['perc'], x['cparam']
@@ -201,7 +221,7 @@ class AdaptationNet(nn.Module):
         # print("")
         return x
 
-
+# CNN for depth images
 class DepthCNN(nn.Module):
 
     def __init__(self, out_dim):
@@ -259,7 +279,9 @@ class DepthCNN(nn.Module):
         x = self.fc2(x)
         return x
 
-
+# Calculate the output shape (or dimension) of a 1D convolutional layer given the input size and parameters of the convolution operation
+# (such as kernel size, stride, dilation, and padding).
+# This is useful for understanding how an input tensor will be transformed by the convolution
 def calc_activation_shape_1d(dim, ksize, stride=1, dilation=1, padding=0):
 
     def shape_each_dim():
@@ -268,7 +290,7 @@ def calc_activation_shape_1d(dim, ksize, stride=1, dilation=1, padding=0):
 
     return int(shape_each_dim())
 
-
+# CNN for proprioceptive data
 class ProprioCNN(nn.Module):
 
     def __init__(self, in_dim) -> None:
@@ -316,7 +338,9 @@ class ProprioCNN(nn.Module):
         prop = prop.flatten(1)
         return prop
 
-
+# Calculate the output shape (or dimension) of a 2D convolutional layer given the input size and parameters of the convolution operation
+# (such as kernel size, stride, dilation, and padding).
+# This is useful for understanding how an input tensor will be transformed by the convolution
 def calc_activation_shape_2d(dim,
                              ksize,
                              dilation=(1, 1),

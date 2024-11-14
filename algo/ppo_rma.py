@@ -14,7 +14,9 @@ from stable_baselines3.common.type_aliases import GymEnv
 
 from algo.buffer_rma import DictRolloutBufferRMA
 
-
+# documentation for PPO class from SB3: https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html
+# Proximal Policy Optimization algorithm combines ideas from A2C (having multiple workers) and TRPO (it uses a trust region to improve the actor)
+# The main idea is that after an update, the new policy should be not too far from the old policy. For that, ppo uses clipping to avoid too large update.
 class PPORMA(PPO):
 
     def __init__(self,
@@ -33,6 +35,9 @@ class PPORMA(PPO):
                             self.observation_space['agent_state'].shape[0]
             self.proprio_history = np.zeros(
                 [self.n_history, self.prop_history_size, self.prop_dim])
+        
+        # This feature enables the automatic randomization of the environment’s parameters (like object scale, density, friction, etc.),
+        # which can improve the generalization of the learned policy across varied environments
         # Automatic Domain Randomization (ADR) init
         self.auto_dr = auto_dr
         if auto_dr:
@@ -86,6 +91,8 @@ class PPORMA(PPO):
                 self.env.set_attr("randomized_param", self.randomized_param,
                                   self.eval_env_id)
 
+    # The model setup is modified to use DictRolloutBufferRMA (a custom rollout buffer) instead of the default DictRolloutBuffer
+    # This method initializes the PPO policy and sets up the buffer for storing rollouts
     def _setup_model(self) -> None:
         '''Modified to use `DictRolloutBufferRMA` instead of `DictRolloutBuffer`
         '''
@@ -115,6 +122,7 @@ class PPORMA(PPO):
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
 
+    # This method evaluates the policy with specific configurations, allowing for adaptation and testing in the environment.
     def test_eval(self,
                   expert_adapt=False,
                   only_dr=False,
@@ -123,6 +131,13 @@ class PPORMA(PPO):
                               only_dr=only_dr,
                               without_adapt_module=without_adapt_module)
 
+    # Collect experiences from the environment
+    # Rollout Buffer: This buffer stores the experiences (observations, actions, rewards, etc.) collected during interactions with the environment, which are later used to update the policy
+    # This method collects experiences using the current policy and fills the rollout buffer with these experiences. The key changes from the base PPO are:
+    # Proprioceptive history (prop_act_history) is updated with the agent’s state and actions
+    # Domain randomization parameters are updated based on the success rate of the environment
+    # The done flag is used to handle episode terminations and to compute terminal values
+    # If auto_dr is enabled, the domain randomization parameters are adjusted based on success rates
     def collect_rollouts(
         self,
         env: VecEnv,
@@ -236,6 +251,7 @@ class PPORMA(PPO):
                             self.succ_queue.append(infos[idx]['success'])
                         self.adr_update()
 
+            # The collected data (observations, actions, rewards, etc.) are added to the rollout_buffer
             try:
                 rollout_buffer.add(self._last_obs, actions, rewards,
                                    self._last_episode_starts, values,
