@@ -127,7 +127,7 @@ class ProprioAdapt(object):
             # reset proprio_buffer if the episode is finished
             self.policy.reset_buffer(dones=dones)
 
-            # f any environment episode has ended (dones == 1), the success rate is calculated by
+            # if any environment episode has ended (dones == 1), the success rate is calculated by
             # summing successes across the environments and dividing by the total number of environments (n_envs)
             if th.any(dones == 1):
                 n_succ = sum([infos[i]['success'] for i in range(50)])

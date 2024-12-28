@@ -15,6 +15,13 @@ class Flatten(nn.Module):
 # Inherits from BaseFeaturesExtractor from Stable-Baselines3
 # Custom feature extractor designed to process different types of observations,
 # with various configurations based on environment specifics (env_name) and input types (e.g., depth images, proprioceptive data).
+# OUTPUT: the feature extractor network outputs a vector that contains everything which needs to be inputted into the policy network
+# During base policy training, feature extractor:
+    # Input: priviliged state information + environment parameters
+    # Output: observation x_t + environment embedding z_t + goal g
+# During adaptation training / policy evaluation, feature extractor:
+    # Input: obs-action history + proprioceptive history
+    # Output: observation x_t + environment embedding z_t + goal g
 class FeaturesExtractorRMA(BaseFeaturesExtractor):
 
     def __init__(self,

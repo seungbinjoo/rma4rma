@@ -179,6 +179,7 @@ class ActorCriticPolicyRMA(ActorCriticPolicy):
 
     # Forward pass in all the networks (actor and critic)
     # Here, we add previous action to the observation
+    # Used during training
     def forward(self,
                 obs: th.Tensor,
                 deterministic: bool = False,
@@ -255,13 +256,11 @@ class ActorCriticPolicyRMA(ActorCriticPolicy):
         else:
             features = self.extract_features(obs, adapt_trn=False)
 
-        # ???????
         # If self.share_features_extractor is True, extracts latent representations for both the policy (latent_pi)
         # and value function (latent_vf) using a shared feature extractor (self.mlp_extractor)
         if self.share_features_extractor:
             latent_pi, latent_vf = self.mlp_extractor(features)
 
-        # ???????
         # Otherwise, processes the extracted features separately for the actor (policy) and critic (value function)
         else:
             pi_features, vf_features = features
@@ -326,6 +325,7 @@ class ActorCriticPolicyRMA(ActorCriticPolicy):
         return self._get_action_dist_from_latent(latent_pi)
 
     # Predicts the action to take based on the given observation, with options for recurrent policies
+    # Used in policy evaluation
     def predict(
         self,
         observation: Union[np.ndarray, Dict[str, np.ndarray]],
