@@ -1,9 +1,0 @@
-name: rma2
-channels:
-  - defaults
-dependencies:
-  - python=3.11.4
-  - pip:
-      - tensorboard
-      - ./ManiSkill2
-      - ./stable-baselines3
