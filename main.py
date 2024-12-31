@@ -21,7 +21,6 @@ def main():
     args = parse_args()
     print("args:", args)
 
-    # store important parameters that have been parsed
     num_envs = args.n_envs
     log_dir = args.log_dir
     rollout_steps = args.rollout_steps
@@ -29,8 +28,8 @@ def main():
     # configure paths where logs will be kept as described by config_log_path() function in config.py
     record_dir, ckpt_dir, ckpt_path, tb_path_root = config_log_path(args)
 
-    # dictionary which contains the model configurations (all the parameters) --> stored in a json file in the appropriate directory within log directory
-    # ---- Save the dictionary to a JSON file
+    # dictionary which contains the model configurations (all the parameters)
+    # stored in a JSON file in the appropriate directory within log directory
     args_dict = vars(args)
     with open(ckpt_dir + '/args.json', 'w') as f:
         json.dump(args_dict, f, indent=4)
