@@ -3,6 +3,11 @@ import torch
 import gymnasium as gym
 from typing import Callable
 
+from mani_skill import ASSET_DIR
+from mani_skill.envs.scene import ManiSkillScene
+from mani_skill.utils.io_utils import load_json
+YCB_DATASET = dict()
+
 # Linear schedule for use in learning rate schedule and domain randomization
 def linear_schedule(initial_value: float,
                     final_value: float,
@@ -20,7 +25,6 @@ def linear_schedule(initial_value: float,
         when anneal_percent = 10%, current_value = 1 - 0.1 * (-1) = 1.10
         when anneal_percent = 99%, current_value = 1 - 0.99 * (-1) = 1.99
     """
-
     def func(progress_remaining: float = None, elapsed_steps=None) -> float:
         """
         Progress will decrease from 1 (beginning) to 0.
@@ -36,6 +40,71 @@ def linear_schedule(initial_value: float,
         return initial_value - anneal_percent * (initial_value - final_value)
 
     return func
+
+def get_ycb_builder_rma(scene: ManiSkillScene,
+                        id: str,
+                        add_collision: bool = True,
+                        add_visual: bool = True,
+                        scale_mult: float = 1.0,
+                        density_mult: float = 1.0):
+    """
+    Same as get_ycb_builder() but:
+        - applies scale and density multipliers
+        - returns builder, object bounding box size, and object density
+    """
+    if "YCB" not in YCB_DATASET:
+        _load_ycb_dataset()
+    model_db = YCB_DATASET["model_data"]
+
+    builder = scene.create_actor_builder()
+
+    metadata = model_db[id]
+    density = metadata.get("density", 1000) * density_mult
+    model_scales = metadata.get("scales", [1.0])
+    scale = model_scales[0] * scale_mult
+    physical_material = None
+    (metadata["bbox"]["max"][2] - metadata["bbox"]["min"][2]) * scale
+    model_dir = ASSET_DIR / "assets/mani_skill2_ycb/models" / id
+    if add_collision:
+        collision_file = str(model_dir / "collision.ply")
+        builder.add_multiple_convex_collisions_from_file(
+            filename=collision_file,
+            scale=[scale] * 3,
+            material=physical_material,
+            density=density,
+        )
+    if add_visual:
+        visual_file = str(model_dir / "textured.obj")
+        builder.add_visual_from_file(filename=visual_file, scale=[scale] * 3)
+
+    return builder, density, (metadata["bbox"]["max"][2] - metadata["bbox"]["min"][2]) * scale
+    
+def _load_ycb_dataset():
+    global YCB_DATASET
+    YCB_DATASET = {
+        "model_data": load_json(ASSET_DIR / "assets/mani_skill2_ycb/info_raw.json"),
+    }
+
+def get_object_id(task_name: str,
+                  model_id: str = None,
+                  object_list: list = None) -> np.array:
+    '''
+    When task_id = 'PickCube', the object is always a cube, so model_id and 
+        root_dir is not needed.
+    When task_id = 'PickSingleYCB', the model_id and object_list is needed. And 
+        the id is the model's position inside the root_dir.
+    '''
+    if task_name in ['PickCube', 'StackCube']:
+        return torch.tensor([1], device='cuda:0')
+    elif task_name in ['PegInsertion']:
+        return torch.tensor([0], device='cuda:0')
+    elif task_name in ['TurnFaucet'] and object_list == None:
+        return torch.tensor([0], device='cuda:0')
+    elif task_name in ['TurnFaucet', 'PickSingleYCB', 'PickSingleEGAD']:
+        assert model_id is not None and object_list is not None
+        return torch.tensor([object_list.index(model_id) + 2], device='cuda:0')
+    else:
+        raise NotImplementedError
 
 # Data structure used as buffer (to store RGBD observations)
 class DictArray(object):
