@@ -7,4 +7,4 @@ plot/
 .vscode/
 __pycache__/
 runs/
-videos
+videos/

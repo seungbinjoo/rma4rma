@@ -30,7 +30,7 @@ WARNED_ONCE = False
 class PickSingleYCBEnvRMA(PickSingleYCBEnv):
     """
     PickSingleYCBEnv where:
-        - Observation state_dict includes keys ['observation', 'privileged_info', 'goal_info'] which is used in RMA training
+        - Observation state_dict additionally includes privileged info and object id, which are used in RMA training
         - Domain randomization (with linear scheduling) is applied
             - Environment variables: object scale, object density, objeect friction
             - Disturbance: external force applied to object every step (with force decay)
@@ -47,7 +47,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         self.randomized_env = randomized_env
         self.obs_noise = obs_noise
         self.ext_disturbance = ext_disturbance
-        self.step_counter = 2e6 # TODO: set value here
+        self.step_counter = 0 # TODO: be able to pass current step, in case using checkpoint
         self.set_randomization_ranges()
         # get object instance and category lists, which will be used for computing object instance and category ids
         parent_folder = Path(ASSET_DIR) / "assets" / "mani_skill2_ycb" / "models"
@@ -63,7 +63,8 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         ]
         self.obj_category_list = list(set(self.obj_category_list))
         super().__init__(*args, **kwargs)
-
+    
+    # TODO: log these values in TensorBoard?
     def set_randomization_ranges(self):
         # Environment variables (object scale multiplier, object density multiplier, object coefficient of friction)
         if self.randomized_env:
@@ -88,7 +89,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             self.obj_rot_high = np.pi * (10 / 180)
 
         # Linear scheduling for lows and highs of randomization ranges
-        init_step, end_step = 1e6, 2e6
+        init_step, end_step = 0, 1e6
         if self.randomized_env:
             self.scale_low_scdl = linear_schedule(1.0, self.scale_low, init_step, end_step)
             self.scale_high_scdl = linear_schedule(1.0, self.scale_high, init_step, end_step)
@@ -268,7 +269,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
                 # noise to object rotation (dim = 4)
                 obj_rot_l = self.obj_rot_low_scdl(elapsed_steps=self.step_counter)
                 obj_rot_h = self.obj_rot_high_scdl(elapsed_steps=self.step_counter)
-                obj_rot_noise_sampled = random_quaternions(n=b, bounds=[obj_rot_l, obj_rot_h])
+                obj_rot_noise_sampled = random_quaternions(n=b, bounds=[obj_rot_l, obj_rot_h]) # TODO: is this the correct amount of angle randomization compared to RMA^2?
                 self.obj_rot_noise[env_idx, :] = obj_rot_noise_sampled
         
         super()._initialize_episode(env_idx, options)
@@ -314,33 +315,34 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         - Dictionary containing privileged information is returned inside obs dict
         - obs dict also contains goal and object state info
         """
+        # TODO: when MS3 is finished implement, activate external disturbance force / ask on discord when this will be implemented
         # NOTE: variables are batched
         # NOTE: slight difference in external disturbance implementation compared to RMA^2
         # if object is not grasped in env, disturbance force is not updated
-        if not hasattr(self, 'disturb_force'):
-            self.disturb_force = torch.zeros(self.num_envs, 3, device=self.device)
-        # check whether object is grasped by gripper
-        grasped = self.agent.is_grasping(self.obj)
-        # add external disturbance force
-        if self.ext_disturbance:
-            # decay the previous disturbance force
-            self.disturb_force *= self.force_decay
-            # sample whether to apply new force with probablity 0.1
-            mask = self._batched_episode_rng.uniform() < 0.1
-            mask_tensor = torch.from_numpy(mask).to(self.device)
-            combined_mask = mask_tensor & grasped
-            idx = torch.nonzero(combined_mask, as_tuple=True)[0]
-            # sample 3D force for gaussian distribution
-            if idx.numel() > 0:
-                self.disturb_force[idx, :] = torch.from_numpy(self._batched_episode_rng.normal(0, 0.1, 3)).float()[idx, :].to(self.device)
-                self.disturb_force[idx, :] /= torch.linalg.norm(self.disturb_force, ord=2, dim=-1)[idx]
-                # sample value by which we scale the force (depends on linear schedule)
-                self.force_scale_h = self.force_scale_scdl(elapsed_steps=self.step_counter)
-                self.force_scale = torch.from_numpy(self._batched_episode_rng.uniform(0, self.force_scale_h)).to(self.device)
-                # scale by object mass and force scale value we just computed
-                self.disturb_force[idx, :] *= self.obj.mass[idx] * self.force_scale[idx]
-                # only apply the force to object if it is grasped
-                self.obj.apply_force(self.disturb_force) # TODO: ManiSkill upgrade not working (so for now, function was manually added in actors.py)
+        # if not hasattr(self, 'disturb_force'):
+        #     self.disturb_force = torch.zeros(self.num_envs, 3, device=self.device)
+        # # check whether object is grasped by gripper
+        # grasped = self.agent.is_grasping(self.obj)
+        # # add external disturbance force
+        # if self.ext_disturbance:
+        #     # decay the previous disturbance force
+        #     self.disturb_force *= self.force_decay
+        #     # sample whether to apply new force with probablity 0.1
+        #     mask = self._batched_episode_rng.uniform() < 0.1
+        #     mask_tensor = torch.from_numpy(mask).to(self.device)
+        #     combined_mask = mask_tensor & grasped
+        #     idx = torch.nonzero(combined_mask, as_tuple=True)[0]
+        #     # sample 3D force for gaussian distribution
+        #     if idx.numel() > 0:
+        #         self.disturb_force[idx, :] = torch.from_numpy(self._batched_episode_rng.normal(0, 0.1, 3)).float().to(self.device)[idx, :]
+        #         self.disturb_force[idx, :] /= torch.linalg.norm(self.disturb_force, ord=2, dim=-1)[idx]
+        #         # sample value by which we scale the force (depends on linear schedule)
+        #         self.force_scale_h = self.force_scale_scdl(elapsed_steps=self.step_counter)
+        #         self.force_scale = torch.from_numpy(self._batched_episode_rng.uniform(0, self.force_scale_h)).to(self.device)
+        #         # scale by object mass and force scale value we just computed
+        #         self.disturb_force[idx, :] *= self.obj.mass.to(self.device)[idx] * self.force_scale[idx]
+        #         # only apply the force to object if it is grasped
+        #         self.obj.apply_force(self.disturb_force) # TODO: ManiSkill upgrade not working (so for now, function was manually added in actors.py), px.cuda_rigid_body_force not implemented yet
 
         # Privileged env info: magnitudes of the impulses applied by the left and right finger of the gripper
         limpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger1_link, self.obj), ord=2, dim=-1)

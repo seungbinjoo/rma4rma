@@ -11,8 +11,8 @@ YCB_DATASET = dict()
 # Linear schedule for use in learning rate schedule and domain randomization
 def linear_schedule(initial_value: float,
                     final_value: float,
-                    init_step: int = 0,
-                    end_step: int = 2e7,
+                    init_step: int = 0, # TODO: support passing this value in from main.py
+                    end_step: int = 1e7,
                     total_steps: int = None) -> Callable[[float], float]:
     """
     Linear learning rate schedule. 'anneal_percent' goes from 0 (beginning) to 1 (end).

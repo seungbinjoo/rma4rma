@@ -24,6 +24,7 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 # Import classes and methods needed for algorithm
 from algo.models import *
 from algo.misc import DictArray
+from task.pick_single_ycb_rma import PickSingleYCBEnvRMA
 
 # Arguments for the experiment in ManiSkill3
 @dataclass
@@ -58,11 +59,11 @@ class Args:
     # Algorithm specific arguments
     phase: str = "PolicyTraining"
     """"whether we are in 'PolicyTraining', 'AdaptationTraining', or 'Evaluation' phase"""
-    env_id: str = "PickSingleYCB-v1"
+    env_id: str = "PickSingleYCBRMA-v1"
     """the id of the environment"""
     include_state: bool = True
     """whether to include state information in observations"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 10000000 # TODO: what did RMA^2 set this to?
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
@@ -110,7 +111,7 @@ class Args:
     """the target KL divergence threshold"""
     reward_scale: float = 1.0
     """Scale the reward by this factor"""
-    eval_freq: int = 25
+    eval_freq: int = 50 # TODO: what to set this as? initially, 25
     """evaluation frequency in terms of iterations"""
     save_train_video_freq: Optional[int] = None
     """frequency to save training videos in terms of iterations"""
@@ -149,7 +150,7 @@ if __name__ == "__main__":
         device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
         # env setup
-        env_kwargs = dict(obs_mode="state_dict", render_mode=args.render_mode, sim_backend="gpu")
+        env_kwargs = dict(obs_mode="state", render_mode=args.render_mode, sim_backend="gpu")
         if args.control_mode is not None:
             env_kwargs["control_mode"] = args.control_mode
         eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
@@ -219,7 +220,7 @@ if __name__ == "__main__":
         values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
         # TRY NOT TO MODIFY: start the game
-        global_step = 0
+        global_step = 0 # TODO: pass global step into envs? so we can do scheduling for domain randomization?
         start_time = time.time()
         next_obs, _ = envs.reset(seed=args.seed)
         eval_obs, _ = eval_envs.reset(seed=args.seed)
