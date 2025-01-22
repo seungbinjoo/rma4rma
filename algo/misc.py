@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import gymnasium as gym
+from gymnasium.spaces import Dict, Box
 from typing import Callable
 
 from mani_skill import ASSET_DIR
@@ -11,8 +12,8 @@ YCB_DATASET = dict()
 # Linear schedule for use in learning rate schedule and domain randomization
 def linear_schedule(initial_value: float,
                     final_value: float,
-                    init_step: int = 0, # TODO: support passing this value in from main.py
-                    end_step: int = 1e7,
+                    init_step: int = 3e7, # TODO: support passing this value in from main.py
+                    end_step: int = 5e7,
                     total_steps: int = None) -> Callable[[float], float]:
     """
     Linear learning rate schedule. 'anneal_percent' goes from 0 (beginning) to 1 (end).
@@ -105,6 +106,14 @@ def get_object_id(task_name: str,
         return torch.tensor([object_list.index(model_id) + 2], device='cuda:0')
     else:
         raise NotImplementedError
+
+def calculate_flattened_dim(space):
+    if isinstance(space, Box):
+        return int(space.shape[0])  # Sum the dimension of the Box
+    elif isinstance(space, Dict):
+        return sum(calculate_flattened_dim(subspace) for subspace in space.spaces.values())
+    else:
+        raise ValueError("Unsupported space type")
 
 # Data structure used as buffer (to store RGBD observations)
 class DictArray(object):

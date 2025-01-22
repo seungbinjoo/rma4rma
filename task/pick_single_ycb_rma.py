@@ -7,15 +7,21 @@
 # See domain randomization: https://maniskill.readthedocs.io/en/latest/user_guide/tutorials/domain_randomization.html
 
 import os
-from typing import Dict, List
+from typing import Dict, List, Union
 from pathlib import Path
 import numpy as np
 import torch
 import sapien
-from algo.misc import linear_schedule, get_ycb_builder_rma, get_object_id
+from algo.misc import linear_schedule, get_ycb_builder_rma, get_object_id, calculate_flattened_dim
 
 # Maniskill-specific imports
 from mani_skill import ASSET_DIR
+from mani_skill.agents.robots.fetch.fetch import Fetch
+from mani_skill.agents.robots.panda.panda import Panda
+from task.panda_wristcam_rma import PandaWristCam
+from mani_skill.utils.common import flatten_state_dict
+from mani_skill.sensors.camera import Camera, CameraConfig, parse_camera_configs, update_camera_configs_from_dict
+from mani_skill.sensors.depth_camera import StereoDepthCamera, StereoDepthCameraConfig
 from mani_skill.envs.tasks.tabletop import PickSingleYCBEnv
 from mani_skill.utils.registration import register_env
 from mani_skill.envs.utils.randomization.pose import random_quaternions
@@ -36,14 +42,21 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             - Disturbance: external force applied to object every step (with force decay)
             - Observation noise: joint position (proprioception) noise, object position noise, object rotation noise
     """
+    
+    SUPPORTED_ROBOTS = ["panda", "fetch", "panda_wristcam"]
+    agent: Union[Panda, Fetch, PandaWristCam]
+
     def __init__(
             self,
             *args,
+            robot_uids="panda_wristcam",
             randomized_env=True,
             obs_noise=True,
             ext_disturbance=True,
+            phase="PolicyTraining",
             **kwargs
     ):
+        self.phase = phase
         self.randomized_env = randomized_env
         self.obs_noise = obs_noise
         self.ext_disturbance = ext_disturbance
@@ -62,7 +75,15 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             if os.path.isdir(os.path.join(parent_folder, f))
         ]
         self.obj_category_list = list(set(self.obj_category_list))
-        super().__init__(*args, **kwargs)
+
+        if self.phase == "AdaptationTraining":
+            self.proprio_hist_dim = 50
+            self.action_space_dim = calculate_flattened_dim(self.single_action_space)
+            self.proprio_features_dim = self._get_obs_agent().shape[-1] + self.action_space_dim
+            self.proprio = torch.zeros(self.num_envs, self.proprio_hist_dim, self.proprio_features_dim, device=self.device)
+            self.proprio_idx = torch.zeros(self.num_envs) # to keep track of timestep index within proprioceptive history, for each environment
+
+        super().__init__(robot_uids=robot_uids, *args, **kwargs)
     
     # TODO: log these values in TensorBoard?
     def set_randomization_ranges(self):
@@ -89,7 +110,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             self.obj_rot_high = np.pi * (10 / 180)
 
         # Linear scheduling for lows and highs of randomization ranges
-        init_step, end_step = 0, 1e6
+        init_step, end_step = 3e7, 5e7 # start randomization at 30M step, then linearly ramp until 50M steps # TODO: this should be passed in as args in base_policy.py
         if self.randomized_env:
             self.scale_low_scdl = linear_schedule(1.0, self.scale_low, init_step, end_step)
             self.scale_high_scdl = linear_schedule(1.0, self.scale_high, init_step, end_step)
@@ -209,7 +230,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         # NOTE: friction not available yet? check ManiSkill documentation / version again
         # randomize object friction
         # for i, obj in enumerate(self._objs):
-        #     for shape in obj.collision_shapes:
+        #     for shape  in obj.collision_shapes:
         #         shape.physical_material.dynamic_friction = self.obj_friction[i]
         #         shape.physical_material.static_friction = self.obj_friction[i]
         #         shape.physical_material.restitution = 0.1
@@ -225,6 +246,79 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             initial_pose=sapien.Pose(),
         )
         self._hidden_objects.append(self.goal_site)
+
+    def _setup_sensors(self, options: dict):
+        """
+        Setup sensor configurations and the sensor objects in the scene. Called by `self._reconfigure`
+        Same as parent class but we exclude 'base_camera' which is initialized using self._default_sensor_configs
+        """
+
+        # First create all the configurations
+        self._sensor_configs = dict()
+
+        # Add task/external sensors
+        # self._sensor_configs.update(parse_camera_configs(self._default_sensor_configs))
+
+        # Add agent sensors
+        self._agent_sensor_configs = dict()
+        if self.agent is not None:
+            self._agent_sensor_configs = parse_camera_configs(self.agent._sensor_configs)
+            self._sensor_configs.update(self._agent_sensor_configs)
+
+        # Add human render camera configs
+        self._human_render_camera_configs = parse_camera_configs(
+            self._default_human_render_camera_configs
+        )
+
+        self._viewer_camera_config = parse_camera_configs(
+            self._default_viewer_camera_configs
+        )
+
+        # Override camera configurations with user supplied configurations
+        if self._custom_sensor_configs is not None:
+            update_camera_configs_from_dict(
+                self._sensor_configs, self._custom_sensor_configs
+            )
+        if self._custom_human_render_camera_configs is not None:
+            update_camera_configs_from_dict(
+                self._human_render_camera_configs,
+                self._custom_human_render_camera_configs,
+            )
+        if self._custom_viewer_camera_configs is not None:
+            update_camera_configs_from_dict(
+                self._viewer_camera_config,
+                self._custom_viewer_camera_configs,
+            )
+        self._viewer_camera_config = self._viewer_camera_config["viewer"]
+
+        # Now we instantiate the actual sensor objects
+        self._sensors = dict()
+
+        for uid, sensor_config in self._sensor_configs.items():
+            if uid in self._agent_sensor_configs:
+                articulation = self.agent.robot
+            else:
+                articulation = None
+            if isinstance(sensor_config, StereoDepthCameraConfig):
+                sensor_cls = StereoDepthCamera
+            elif isinstance(sensor_config, CameraConfig):
+                sensor_cls = Camera
+            self._sensors[uid] = sensor_cls(
+                sensor_config,
+                self.scene,
+                articulation=articulation,
+            )
+
+        # Cameras for rendering only
+        self._human_render_cameras = dict()
+        for uid, camera_config in self._human_render_camera_configs.items():
+            self._human_render_cameras[uid] = Camera(
+                camera_config,
+                self.scene,
+            )
+
+        self.scene.sensors = self._sensors
+        self.scene.human_render_cameras = self._human_render_cameras
 
     """
     Episode Initialization Code:
@@ -271,6 +365,12 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
                 obj_rot_h = self.obj_rot_high_scdl(elapsed_steps=self.step_counter)
                 obj_rot_noise_sampled = random_quaternions(n=b, bounds=[obj_rot_l, obj_rot_h]) # TODO: is this the correct amount of angle randomization compared to RMA^2?
                 self.obj_rot_noise[env_idx, :] = obj_rot_noise_sampled
+            
+            # for envs that are resetting, set proprioceptive histories to zeros
+            if self.phase == "AdaptationTraining":
+                self.proprio[env_idx, ...] = torch.zeros(b, self.proprio_hist_dim, self.proprio_features_dim, device=self.device)
+                self.proprio_idx[env_idx] = torch.zeros(b, device=self.device)
+                
         
         super()._initialize_episode(env_idx, options)
 
@@ -281,24 +381,27 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
     """
 
     def step(self, action):
-        self.step_counter += 1
+        self.step_counter += self.num_envs
         return super().step(action)
 
     def _get_obs_state_dict(self, info: Dict):
         """
-        Get (ground-truth) state-based observations.
+        Get (ground-truth) state-based observations (used during policy training phase).
         Then apply proprioceptive observation noise.
         """
         # add noise to proprioceptive observations
         obs_agent = self._get_obs_agent()
         obs_agent['qpos'] = obs_agent['qpos'] + self.joint_pos_noise
+        state, goal, env_params, obj_instance_id, obj_category_id = self._get_obs_extra(info)
         return dict(
-            # Agent state info: get observations about the agent's state.
-            # By default it is proprioceptive observations which include qpos and qvel.
-            agent=obs_agent,
-            # Get task-relevant extra observations.
-            # Usually defined on a task by task basis
-            extra=self._get_obs_extra(info),
+            # Agent state info: get observations about the agent's state, by default it is proprioceptive observations which include qpos and qvel.
+            agent=torch.cat((obs_agent['qpos'], obs_agent['qvel']), dim=-1), # [N, 18]
+            # Get task-relevant extra observations, usually defined on a task by task basis
+            state=state,
+            goal=goal,
+            env_params=env_params,
+            obj_instance_id=obj_instance_id,
+            obj_category_id=obj_category_id,
         ) # when flattened, dim = [N, 56] (excluding obs_act_history)
 
     def _get_obs_extra(self, info):
@@ -311,11 +414,14 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         Notes:
         - _get_obs_extra() is called within get_obs(), which in turn is called within step()
         - External disturbance force is applied
-        - Compute left and right impulses for gripper joints
-        - Dictionary containing privileged information is returned inside obs dict
-        - obs dict also contains goal and object state info
+        - If in policy training phase:
+            - Compute left and right impulses for gripper joints
+            - Dictionary containing privileged information is returned inside obs dict
+            - obs dict also contains goal and object state info
+        - If in adaptation training or evaluation phase:
+            - Returns state, goal, proprio (which is proprioceptive history)
         """
-        # TODO: when MS3 is finished implement, activate external disturbance force / ask on discord when this will be implemented
+        # TODO: when MS3 is finished, implement; activate external disturbance force / ask on discord when this will be implemented
         # NOTE: variables are batched
         # NOTE: slight difference in external disturbance implementation compared to RMA^2
         # if object is not grasped in env, disturbance force is not updated
@@ -345,36 +451,72 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         #         self.obj.apply_force(self.disturb_force) # TODO: ManiSkill upgrade not working (so for now, function was manually added in actors.py), px.cuda_rigid_body_force not implemented yet
 
         # Privileged env info: magnitudes of the impulses applied by the left and right finger of the gripper
-        limpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger1_link, self.obj), ord=2, dim=-1)
-        rimpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger2_link, self.obj), ord=2, dim=-1)
+        if self.phase == "PolicyTraining":
+            limpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger1_link, self.obj), ord=2, dim=-1)
+            rimpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger2_link, self.obj), ord=2, dim=-1)
         
         # Task-specific observations for pick_single_ycb
         obj_pose = self.obj.pose.raw_pose # [N, 7], where last dim represents 3D pose + 4D quaternion
         obj_pose += torch.cat((self.obj_pos_noise, self.obj_rot_noise), dim=-1)
-        obs = dict(
-            tcp_pose=self.agent.tcp.pose.raw_pose,
-            goal_pos=self.goal_site.pose.p,
-            is_grasped=info["is_grasped"],
-        )
-        # object state and goal info
-        if "state" in self.obs_mode:
-            obs.update(
-                tcp_to_goal_pos=self.goal_site.pose.p - self.agent.tcp.pose.p,
-                obj_pose=obj_pose,
-                tcp_to_obj_pos=self.obj.pose.p - self.agent.tcp.pose.p,
-                obj_to_goal_pos=self.goal_site.pose.p - self.obj.pose.p,
-            )
-
-        # TODO: if obs_act_hist, add proprioceptive history to observation (for adaptation training and evaluation)
+        state = torch.cat((                                     # state [N, 18]
+            self.agent.tcp.pose.raw_pose,                       # tcp_pose [N, 7]
+            info["is_grasped"].unsqueeze(-1),                   # grasp state [N, 1]
+            obj_pose,                                           # object pose [N, 7]
+            self.obj.pose.p - self.agent.tcp.pose.p             # tcp_to_obj_pos [N, 3]
+        ), dim=-1)
+        goal = torch.cat((                                      # goal [N, 9]
+            self.goal_site.pose.p,                              # goal_pos [N, 3]
+            self.goal_site.pose.p - self.agent.tcp.pose.p,      # tcp_to_goal_pos [N, 3]
+            self.goal_site.pose.p - self.obj.pose.p             # obj_to_goal_pos [N, 3]
+        ), dim=-1)
         # privileged info (NOTE: by default, obs_noise and ext_disturbance is not included here)
-        obs.update(
-            obj_ang=obj_pose[:, -4:],              # dim = [N, 4]
-            bbox_size=self.model_bbox_size,        # dim = [N, 3]
-            obj_density=self.obj_density,          # dim = [N]
-            obj_friction=self.obj_friction,        # dim = [N]
-            limpulse=limpulse,                     # dim = [N]
-            rimpulse=rimpulse,                     # dim = [N]
-            obj_instance_id=self.obj_instance_id,  # dim = [N]
-            obj_category_id=self.obj_category_id,  # dim = [N]
+        if self.phase == "PolicyTraining":
+            env_params = torch.cat((                             # env params [N, 9]
+                obj_pose[:, -4:],                                # dim = [N, 4]
+                self.model_bbox_size.unsqueeze(-1),              # dim = [N, 1]
+                self.obj_density.unsqueeze(-1),                  # dim = [N, 1]
+                self.obj_friction.unsqueeze(-1),                 # dim = [N, 1]
+                limpulse.unsqueeze(-1),                          # dim = [N, 1]
+                rimpulse.unsqueeze(-1)                           # dim = [N, 1]
+            ), dim=-1)
+            obj_instance_id = self.obj_instance_id.unsqueeze(-1) # dim = [N,]
+            obj_category_id = self.obj_category_id.unsqueeze(-1) # dim = [N,]
+            return state, goal, env_params, obj_instance_id, obj_category_id
+        # add proprioceptive history to observation (for adaptation training and evaluation)
+        if self.phase == "AdaptationTraining":
+            # fill proprio buffer with observation; note that action will be filled in later in Agent class
+            self.proprio[:, self.proprio_idx, :] = torch.cat((self._get_obs_agent, torch.zeros(self.num_envs, self.action_space_dim, device=self._render_device)), dim=-1)
+            self.proprio_idx = self.proprio_idx + 1
+            return state, goal, self.proprio, self.proprio_idx
+
+    def _get_obs_with_sensor_data(self, info: Dict, apply_texture_transforms: bool = True) -> dict:
+        """
+        Get the observation with sensor data (used during adaptation training and evaluation phase)
+        Same as parent class but:
+        - we apply noise to agent proprioceptive data
+        - we have more state, goal, env_params, obj_instance_id, obj_category_id, sensor_param, sensor_data keys in the observation dictionary
+        - sensor_param is flattened
+        - sensor_data is [N, 32, 32, 1], where 1 is for depth
+        """
+        # observations same as when obs_mode='state_dict', during base policy training phase
+        obs_agent = self._get_obs_agent()
+        obs_agent['qpos'] = obs_agent['qpos'] + self.joint_pos_noise
+        state, goal, proprio, proprio_idx = self._get_obs_extra(info)
+
+        # flatten camera parameters
+        sensor_param = {}
+        for k, v in self.get_sensor_params()['hand_camera'].items():
+            sensor_param[k] = torch.flatten(v, start_dim=1)
+
+        # depth image
+        sensor_data = self._get_obs_sensor_data(apply_texture_transforms)['hand_camera']['depth']
+
+        return dict(
+            agent=torch.cat((obs_agent['qpos'], obs_agent['qvel']), dim=-1), # [N, 18]
+            state=state,                                                     # [N, 18]
+            goal=goal,                                                       # [N, 9]
+            proprio=proprio,                                                 # FIXME: [N, 50, 36]
+            proprio_idx=proprio_idx,                                         # FIXME: 
+            sensor_param=flatten_state_dict(sensor_param, use_torch=True),   # [N, 37]
+            sensor_data=sensor_data,                                         # [N, 32, 32, 1]
         )
-        return obs
