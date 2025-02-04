@@ -109,11 +109,12 @@ def get_object_id(task_name: str,
 
 def calculate_flattened_dim(space):
     if isinstance(space, Box):
-        return int(space.shape[0])  # Sum the dimension of the Box
+        # For scalar spaces, return 1; otherwise, calculate the product of the shape
+        return int(1 if len(space.shape) == 0 else space.shape[0] * (space.shape[1] if len(space.shape) > 1 else 1))
     elif isinstance(space, Dict):
         return sum(calculate_flattened_dim(subspace) for subspace in space.spaces.values())
     else:
-        raise ValueError("Unsupported space type")
+        raise ValueError(f"Unsupported space type: {type(space)}")
 
 # Data structure used as buffer (to store RGBD observations)
 class DictArray(object):
