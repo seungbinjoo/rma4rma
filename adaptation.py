@@ -56,13 +56,13 @@ class Args: # TODO: get rid of args that are not needed for adaptation training
     """the environment rendering mode"""
 
     # Algorithm specific arguments
-    phase: str = "PolicyTraining"
+    phase: str = "AdaptationTraining"
     """"whether we are in 'PolicyTraining', 'AdaptationTraining', or 'Evaluation' phase"""
     env_id: str = "PickSingleYCBRMA-v1"
     """the id of the environment"""
     include_state: bool = True
     """whether to include state information in observations"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
@@ -86,6 +86,8 @@ class Args: # TODO: get rid of args that are not needed for adaptation training
     """the control mode to use for the environment"""
     eval_freq: int = 1e5
     """evaluation frequency in terms of steps"""
+    save_train_video_freq: Optional[int] = None
+    """frequency to save training videos in terms of iterations"""
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -173,7 +175,7 @@ if __name__ == "__main__":
     
     # adaptation training
     step = 0
-    while step < 1e6:
+    while step < args.total_timesteps:
         # periodically test the agent in the evaluation environment to measure performance
         if step % args.eval_freq == 1:
             print("Evaluating")
