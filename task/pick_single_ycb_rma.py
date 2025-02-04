@@ -76,12 +76,14 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         ]
         self.obj_category_list = list(set(self.obj_category_list))
 
-        if self.phase == "AdaptationTraining":
+        if self.phase == "AdaptationTraining" or "Evaluation":
             self.proprio_hist_dim = 50
-            self.action_space_dim = calculate_flattened_dim(self.single_action_space)
-            self.proprio_features_dim = self._get_obs_agent().shape[-1] + self.action_space_dim
-            self.proprio = torch.zeros(self.num_envs, self.proprio_hist_dim, self.proprio_features_dim, device=self.device)
-            self.proprio_idx = torch.zeros(self.num_envs) # to keep track of timestep index within proprioceptive history, for each environment
+            self.action_space_dim = 8
+            self.agent_obs_dim = 18
+            self.num_envs = kwargs['num_envs']
+            self.proprio_features_dim = self.agent_obs_dim # + self.action_space_dim
+            self.proprio = torch.zeros(self.num_envs, self.proprio_hist_dim, self.proprio_features_dim)
+            self.proprio_idx = torch.zeros(self.num_envs, dtype=torch.int) # to keep track of timestep index within proprioceptive history, for each environment
 
         super().__init__(robot_uids=robot_uids, *args, **kwargs)
     
@@ -368,8 +370,12 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             
             # for envs that are resetting, set proprioceptive histories to zeros
             if self.phase == "AdaptationTraining":
+                # move proprioception tensors to GPU
+                self.proprio = self.proprio.to(self.device)
+                self.proprio_idx = self.proprio_idx.to(self.device)
+                # partial reset for proprioceptive histories
                 self.proprio[env_idx, ...] = torch.zeros(b, self.proprio_hist_dim, self.proprio_features_dim, device=self.device)
-                self.proprio_idx[env_idx] = torch.zeros(b, device=self.device)
+                self.proprio_idx[env_idx] = torch.zeros(b, dtype=torch.int, device=self.device)
                 
         
         super()._initialize_episode(env_idx, options)
@@ -451,7 +457,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         #         self.obj.apply_force(self.disturb_force) # TODO: ManiSkill upgrade not working (so for now, function was manually added in actors.py), px.cuda_rigid_body_force not implemented yet
 
         # Privileged env info: magnitudes of the impulses applied by the left and right finger of the gripper
-        if self.phase == "PolicyTraining":
+        if self.phase == "PolicyTraining" or "AdaptationTraining":
             limpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger1_link, self.obj), ord=2, dim=-1)
             rimpulse = torch.linalg.norm(self.scene.get_pairwise_contact_impulses(self.agent.finger2_link, self.obj), ord=2, dim=-1)
         
@@ -470,24 +476,41 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             self.goal_site.pose.p - self.obj.pose.p             # obj_to_goal_pos [N, 3]
         ), dim=-1)
         # privileged info (NOTE: by default, obs_noise and ext_disturbance is not included here)
+        env_params = torch.cat((                             # env params [N, 9]
+            obj_pose[:, -4:],                                # dim = [N, 4]
+            self.model_bbox_size.unsqueeze(-1),              # dim = [N, 1]
+            self.obj_density.unsqueeze(-1),                  # dim = [N, 1]
+            self.obj_friction.unsqueeze(-1),                 # dim = [N, 1]
+            limpulse.unsqueeze(-1),                          # dim = [N, 1]
+            rimpulse.unsqueeze(-1)                           # dim = [N, 1]
+        ), dim=-1)
+        obj_instance_id = self.obj_instance_id.unsqueeze(-1) # dim = [N,]
+        obj_category_id = self.obj_category_id.unsqueeze(-1) # dim = [N,]
         if self.phase == "PolicyTraining":
-            env_params = torch.cat((                             # env params [N, 9]
-                obj_pose[:, -4:],                                # dim = [N, 4]
-                self.model_bbox_size.unsqueeze(-1),              # dim = [N, 1]
-                self.obj_density.unsqueeze(-1),                  # dim = [N, 1]
-                self.obj_friction.unsqueeze(-1),                 # dim = [N, 1]
-                limpulse.unsqueeze(-1),                          # dim = [N, 1]
-                rimpulse.unsqueeze(-1)                           # dim = [N, 1]
-            ), dim=-1)
-            obj_instance_id = self.obj_instance_id.unsqueeze(-1) # dim = [N,]
-            obj_category_id = self.obj_category_id.unsqueeze(-1) # dim = [N,]
             return state, goal, env_params, obj_instance_id, obj_category_id
-        # add proprioceptive history to observation (for adaptation training and evaluation)
+        # update proprioceptive history
         if self.phase == "AdaptationTraining":
             # fill proprio buffer with observation; note that action will be filled in later in Agent class
-            self.proprio[:, self.proprio_idx, :] = torch.cat((self._get_obs_agent, torch.zeros(self.num_envs, self.action_space_dim, device=self._render_device)), dim=-1)
-            self.proprio_idx = self.proprio_idx + 1
-            return state, goal, self.proprio, self.proprio_idx
+            obs_agent = flatten_state_dict(self._get_obs_agent(), use_torch=True)
+            # find which environments have less than proprio_hist_dim steps recorded.
+            mask = self.proprio_idx < self.proprio_hist_dim
+            # for these environments, simply store new_data at the index proprio_idx.
+            idx_less = torch.nonzero(mask).squeeze(-1)
+            if idx_less.numel() > 0:
+                self.proprio[idx_less, self.proprio_idx[idx_less]] = obs_agent[idx_less]
+                self.proprio_idx[idx_less] += 1  # increment the timestep counter
+            # for environments that already have proprio_hist_dim steps recorded,
+            # shift the history left (dropping the oldest data) and append the new data.
+            idx_full = torch.nonzero(~mask).squeeze(-1)
+            if idx_full.numel() > 0:
+                # shift the history one step to the left: take timesteps 1...end and concatenate the new data at the end.
+                self.proprio[idx_full] = torch.cat((
+                    self.proprio[idx_full, 1:],
+                    obs_agent[idx_full].unsqueeze(1)),
+                    dim=1
+                )
+                self.proprio_idx[idx_full] += 1  # increment the timestep counter
+            return state, goal, self.proprio, self.proprio_idx, env_params, obj_instance_id, obj_category_id
 
     def _get_obs_with_sensor_data(self, info: Dict, apply_texture_transforms: bool = True) -> dict:
         """
@@ -501,7 +524,7 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
         # observations same as when obs_mode='state_dict', during base policy training phase
         obs_agent = self._get_obs_agent()
         obs_agent['qpos'] = obs_agent['qpos'] + self.joint_pos_noise
-        state, goal, proprio, proprio_idx = self._get_obs_extra(info)
+        state, goal, proprio, proprio_idx, env_params, obj_instance_id, obj_category_id = self._get_obs_extra(info)
 
         # flatten camera parameters
         sensor_param = {}
@@ -515,8 +538,11 @@ class PickSingleYCBEnvRMA(PickSingleYCBEnv):
             agent=torch.cat((obs_agent['qpos'], obs_agent['qvel']), dim=-1), # [N, 18]
             state=state,                                                     # [N, 18]
             goal=goal,                                                       # [N, 9]
-            proprio=proprio,                                                 # FIXME: [N, 50, 36]
-            proprio_idx=proprio_idx,                                         # FIXME: 
+            proprio=proprio,                                                 # [N, 50, 26]
+            proprio_idx=proprio_idx,                                         # [N,]
             sensor_param=flatten_state_dict(sensor_param, use_torch=True),   # [N, 37]
             sensor_data=sensor_data,                                         # [N, 32, 32, 1]
+            env_params=env_params,                                           # [N, 9]
+            obj_instance_id=obj_instance_id,                                 # [N,]
+            obj_category_id=obj_category_id,                                 # [N,]
         )
