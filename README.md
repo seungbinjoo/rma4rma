@@ -6,8 +6,8 @@ Generalisable robotic manipulation is a key challenge in robot learning. For rob
 
 We implement and evaluate our results using [ManiSkill](https://www.maniskill.ai/), a platform for robot simulation supporting GPU parallelized heterogeneous simulation.
 
-![panda_video](panda.mov)
-![two_panda_video](panda_two.mov)
+![panda_video](panda.gif)
+![two_panda_video](panda_two.gif)
 
 # Dependencies
 
