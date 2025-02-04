@@ -9,7 +9,7 @@ We implement and evaluate our results using [ManiSkill](https://www.maniskill.ai
 ![panda_video](panda.gif)
 ![two_panda_video](panda_two.gif)
 
-# Dependencies
+## Dependencies
 
 The code is based on python3 and the following dependencies.
 ManiSkill
@@ -25,7 +25,7 @@ Vulkan
 sudo apt-get install libvulkan1
 ```
 
-# Policy Training:
+## Policy Training:
 
 To execute policy training
 
@@ -35,7 +35,7 @@ python base_policy.py --exp_name="BasePolicy_PickYCBSingleRMA_DDMMYY" --phase="P
   --total_timesteps=50_000_000 --eval_freq=25 --num-steps=50
 ```
 
-# Adaptation Training:
+## Adaptation Training:
 
 To execute adaptation training
 
@@ -44,7 +44,7 @@ python adaptation.py --exp_name="AdaptationTraining_PickYCBSingleRMA_DDMMYY" --p
   --num_envs=256 --base_policy_checkpoint="/users/joo/4yp/rma4rma/runs/BasePolicy_PickYCBSingleRMA_09012025/final_ckpt.pt"
 ```
 
-# Evaluation:
+## Evaluation:
 
 To execute evaluation
 
@@ -53,6 +53,6 @@ python evaluation.py --exp_name="Evaluation_PickYCBSingleRMA_DDMMYY" --phase="Ev
   --num_envs=256 --base_policy_checkpoint="/users/joo/4yp/rma4rma/runs/BasePolicy_PickYCBSingleRMA_09012025/final_ckpt.pt"
 ```
 
-# Work In Progress:
+## Work In Progress:
 
 VLM feedback training
